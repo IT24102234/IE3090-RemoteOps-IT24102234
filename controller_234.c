@@ -1,749 +1,708 @@
+/*
+ * RemoteOps - Controller
+ * Registration: IT24102234
+ * SID: 4322
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
-#include <sys/stat.h>
+#include <sys/select.h>
+#include <netinet/in.h>
 
 #define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 9410
+
+#define UDP_PORT 9500
+
 #define AUTH_TOKEN "OPS-2234"
+#define SID "4322"
 
 #define TEST_FILE "test.txt"
 #define DOWNLOAD_FILE "downloaded_test.txt"
 
-/*
- * Receive one line ending with '\n'.
- */
-int receive_line(int socket_fd,
-                 char *buffer,
-                 int buffer_size)
+#define BUFFER_SIZE 4096
+#define LINE_SIZE 1024
+
+
+/* ============================================================
+   Send exactly all requested bytes
+   ============================================================ */
+
+int send_all(int sockfd, const void *buffer, size_t length)
 {
-    int total = 0;
-    char ch;
-
-    while (total < buffer_size - 1)
-    {
-        int n = recv(socket_fd,
-                     &ch,
-                     1,
-                     0);
-
-        if (n <= 0)
-        {
-            return n;
-        }
-
-        buffer[total++] = ch;
-
-        if (ch == '\n')
-        {
-            break;
-        }
-    }
-
-    buffer[total] = '\0';
-
-    return total;
-}
-
-/*
- * Send exactly all requested bytes.
- */
-int send_all(int socket_fd,
-             const void *data,
-             size_t total_bytes)
-{
-    const char *ptr = data;
     size_t total_sent = 0;
+    const char *data = (const char *)buffer;
 
-    while (total_sent < total_bytes)
+    while (total_sent < length)
     {
-        ssize_t n = send(socket_fd,
-                         ptr + total_sent,
-                         total_bytes - total_sent,
-                         0);
+        ssize_t sent = send(sockfd,
+                            data + total_sent,
+                            length - total_sent,
+                            0);
 
-        if (n <= 0)
+        if (sent <= 0)
         {
             return -1;
         }
 
-        total_sent += (size_t)n;
+        total_sent += sent;
     }
 
     return 0;
 }
 
-/*
- * Receive exactly the requested number of bytes.
- */
-int receive_all(int socket_fd,
-                void *data,
-                size_t total_bytes)
+
+/* ============================================================
+   Receive exactly the requested number of bytes
+   ============================================================ */
+
+int receive_all(int sockfd, void *buffer, size_t length)
 {
-    char *ptr = data;
     size_t total_received = 0;
+    char *data = (char *)buffer;
 
-    while (total_received < total_bytes)
+    while (total_received < length)
     {
-        ssize_t n = recv(socket_fd,
-                         ptr + total_received,
-                         total_bytes - total_received,
-                         0);
+        ssize_t received = recv(sockfd,
+                                data + total_received,
+                                length - total_received,
+                                0);
 
-        if (n <= 0)
+        if (received <= 0)
         {
             return -1;
         }
 
-        total_received += (size_t)n;
+        total_received += received;
     }
 
     return 0;
 }
 
-/*
- * Send an EXEC command and display the response.
- */
-int send_exec_command(int sock,
-                      char *buffer,
-                      int buffer_size,
-                      const char *command_name)
+
+/* ============================================================
+   Receive one line ending with newline
+   ============================================================ */
+
+int receive_line(int sockfd, char *buffer, size_t size)
 {
-    char command[100];
+    size_t index = 0;
 
-    snprintf(command,
-             sizeof(command),
-             "EXEC %s\n",
-             command_name);
-
-    if (send_all(sock,
-                 command,
-                 strlen(command)) < 0)
+    while (index < size - 1)
     {
-        return 0;
+        char c;
+
+        ssize_t received = recv(sockfd, &c, 1, 0);
+
+        if (received <= 0)
+        {
+            return -1;
+        }
+
+        if (c == '\n')
+        {
+            buffer[index] = '\0';
+            return 0;
+        }
+
+        if (c != '\r')
+        {
+            buffer[index++] = c;
+        }
     }
 
-    printf("Sent: EXEC %s\n",
-           command_name);
-
-    memset(buffer,
-           0,
-           buffer_size);
-
-    int bytes_received =
-        receive_line(sock,
-                     buffer,
-                     buffer_size);
-
-    if (bytes_received <= 0)
-    {
-        printf("Failed to receive EXEC response\n");
-        return 0;
-    }
-
-    printf("Agent: %s",
-           buffer);
-
-    return 1;
+    buffer[size - 1] = '\0';
+    return 0;
 }
 
-/*
- * PUT a local file to the Agent.
- */
-int put_file(int sock,
-             const char *filename)
+
+/* ============================================================
+   Connect to Agent
+   ============================================================ */
+
+int connect_to_agent(void)
 {
-    struct stat file_info;
-
-    if (stat(filename,
-             &file_info) != 0)
-    {
-        perror("stat");
-
-        return 0;
-    }
-
-    unsigned long long filesize =
-        (unsigned long long)file_info.st_size;
-
-    printf("\n--- PUT TEST ---\n");
-
-    printf("Local file: %s\n",
-           filename);
-
-    printf("File size: %llu bytes\n",
-           filesize);
-
-    /*
-     * Send PUT header.
-     */
-    char header[512];
-
-    snprintf(header,
-             sizeof(header),
-             "PUT %s %llu\n",
-             filename,
-             filesize);
-
-    if (send_all(sock,
-                 header,
-                 strlen(header)) < 0)
-    {
-        printf("Failed to send PUT header\n");
-
-        return 0;
-    }
-
-    printf("Sent: PUT %s %llu\n",
-           filename,
-           filesize);
-
-    /*
-     * Open local file.
-     */
-    FILE *file =
-        fopen(filename, "rb");
-
-    if (file == NULL)
-    {
-        perror("fopen");
-
-        return 0;
-    }
-
-    /*
-     * Send exactly the file bytes.
-     */
-    unsigned char data[4096];
-
-    unsigned long long total_sent = 0;
-
-    while (total_sent < filesize)
-    {
-        size_t remaining =
-            (size_t)(filesize - total_sent);
-
-        size_t chunk_size =
-            remaining > sizeof(data)
-            ? sizeof(data)
-            : remaining;
-
-        size_t bytes_read =
-            fread(data,
-                  1,
-                  chunk_size,
-                  file);
-
-        if (bytes_read != chunk_size)
-        {
-            printf("Failed to read complete file\n");
-
-            fclose(file);
-
-            return 0;
-        }
-
-        if (send_all(sock,
-                     data,
-                     bytes_read) < 0)
-        {
-            printf("Failed to send file data\n");
-
-            fclose(file);
-
-            return 0;
-        }
-
-        total_sent +=
-            (unsigned long long)bytes_read;
-    }
-
-    fclose(file);
-
-    printf("Sent %llu raw file bytes\n",
-           total_sent);
-
-    /*
-     * Receive Agent response.
-     */
-    char response[1024];
-
-    int bytes_received =
-        receive_line(sock,
-                     response,
-                     sizeof(response));
-
-    if (bytes_received <= 0)
-    {
-        printf("Failed to receive PUT response\n");
-
-        return 0;
-    }
-
-    printf("Agent: %s",
-           response);
-
-    return 1;
-}
-
-/*
- * GET a file from the Agent.
- */
-int get_file(int sock,
-             const char *filename,
-             const char *output_filename)
-{
-    printf("\n--- GET TEST ---\n");
-
-    /*
-     * Send GET command.
-     */
-    char command[512];
-
-    snprintf(command,
-             sizeof(command),
-             "GET %s\n",
-             filename);
-
-    if (send_all(sock,
-                 command,
-                 strlen(command)) < 0)
-    {
-        printf("Failed to send GET command\n");
-
-        return 0;
-    }
-
-    printf("Sent: GET %s\n",
-           filename);
-
-    /*
-     * Receive GET response header.
-     */
-    char response[1024];
-
-    int bytes_received =
-        receive_line(sock,
-                     response,
-                     sizeof(response));
-
-    if (bytes_received <= 0)
-    {
-        printf("Failed to receive GET response\n");
-
-        return 0;
-    }
-
-    printf("Agent: %s",
-           response);
-
-    /*
-     * Check that the Agent returned
-     * a successful file response.
-     */
-    if (strncmp(response,
-                "OK FILE_SEND ",
-                strlen("OK FILE_SEND ")) != 0)
-    {
-        printf("GET failed\n");
-
-        return 0;
-    }
-
-    /*
-     * Parse:
-     *
-     * OK FILE_SEND <filename> <filesize> SID:4322
-     */
-    char returned_filename[256];
-    unsigned long long filesize;
-
-    if (sscanf(response,
-               "OK FILE_SEND %255s %llu",
-               returned_filename,
-               &filesize) != 2)
-    {
-        printf("Invalid GET response format\n");
-
-        return 0;
-    }
-
-    printf("Expected file size: %llu bytes\n",
-           filesize);
-
-    /*
-     * Open local output file.
-     */
-    FILE *file =
-        fopen(output_filename, "wb");
-
-    if (file == NULL)
-    {
-        perror("fopen output");
-
-        return 0;
-    }
-
-    /*
-     * Receive exactly the declared
-     * number of raw bytes.
-     */
-    unsigned char data[4096];
-
-    unsigned long long total_received = 0;
-
-    while (total_received < filesize)
-    {
-        size_t remaining =
-            (size_t)(filesize - total_received);
-
-        size_t chunk_size =
-            remaining > sizeof(data)
-            ? sizeof(data)
-            : remaining;
-
-        if (receive_all(sock,
-                        data,
-                        chunk_size) < 0)
-        {
-            printf("Failed to receive complete file\n");
-
-            fclose(file);
-
-            return 0;
-        }
-
-        size_t bytes_written =
-            fwrite(data,
-                   1,
-                   chunk_size,
-                   file);
-
-        if (bytes_written != chunk_size)
-        {
-            printf("Failed to write downloaded file\n");
-
-            fclose(file);
-
-            return 0;
-        }
-
-        total_received +=
-            (unsigned long long)chunk_size;
-    }
-
-    fclose(file);
-
-    printf("Received %llu raw file bytes\n",
-           total_received);
-
-    printf("Saved downloaded file as: %s\n",
-           output_filename);
-
-    return 1;
-}
-
-int main(void)
-{
-    int sock;
+    int sockfd;
 
     struct sockaddr_in server_addr;
 
-    char buffer[4096];
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
 
-    /*
-     * Create TCP socket.
-     */
-    sock =
-        socket(AF_INET,
-               SOCK_STREAM,
-               0);
-
-    if (sock < 0)
+    if (sockfd < 0)
     {
         perror("socket");
-
-        return 1;
+        return -1;
     }
 
-    memset(&server_addr,
-           0,
-           sizeof(server_addr));
+    memset(&server_addr, 0, sizeof(server_addr));
 
-    server_addr.sin_family =
-        AF_INET;
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(SERVER_PORT);
 
-    server_addr.sin_port =
-        htons(SERVER_PORT);
-
-    /*
-     * Convert server IP.
-     */
-    if (inet_pton(AF_INET,
-                  SERVER_IP,
-                  &server_addr.sin_addr) <= 0)
+    if (inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr) <= 0)
     {
         perror("inet_pton");
-
-        close(sock);
-
-        return 1;
+        close(sockfd);
+        return -1;
     }
 
-    /*
-     * Connect to Agent.
-     */
-    if (connect(sock,
+    if (connect(sockfd,
                 (struct sockaddr *)&server_addr,
                 sizeof(server_addr)) < 0)
     {
         perror("connect");
-
-        close(sock);
-
-        return 1;
+        close(sockfd);
+        return -1;
     }
 
-    printf("Connected to RemoteOps Agent\n");
+    return sockfd;
+}
 
-    /*
-     * AUTH
-     */
-    char auth_message[100];
 
-    snprintf(auth_message,
-             sizeof(auth_message),
+/* ============================================================
+   Authentication
+   ============================================================ */
+
+int authenticate(int sockfd)
+{
+    char response[LINE_SIZE];
+
+    printf("\n--- AUTHENTICATION ---\n");
+
+    printf("Sending authentication token: %s\n", AUTH_TOKEN);
+
+    char request[LINE_SIZE];
+
+    snprintf(request,
+             sizeof(request),
              "AUTH %s\n",
              AUTH_TOKEN);
 
-    send_all(sock,
-             auth_message,
-             strlen(auth_message));
-
-    printf("Sent: AUTH %s\n",
-           AUTH_TOKEN);
-
-    int bytes_received =
-        receive_line(sock,
-                     buffer,
-                     sizeof(buffer));
-
-    if (bytes_received <= 0)
+    if (send_all(sockfd, request, strlen(request)) < 0)
     {
-        printf("Failed to receive authentication response\n");
+        perror("send");
+        return -1;
+    }
 
-        close(sock);
+    if (receive_line(sockfd, response, sizeof(response)) < 0)
+    {
+        printf("Failed to receive authentication response.\n");
+        return -1;
+    }
 
+    printf("Agent: %s\n", response);
+
+    if (strstr(response, "OK AUTHENTICATED") != NULL)
+    {
+        printf("Authentication successful.\n");
+        return 0;
+    }
+
+    printf("Authentication failed.\n");
+
+    return -1;
+}
+
+
+/* ============================================================
+   Simple TCP command
+   ============================================================ */
+
+int send_command(int sockfd, const char *command)
+{
+    char request[LINE_SIZE];
+    char response[BUFFER_SIZE];
+
+    snprintf(request,
+             sizeof(request),
+             "%s\n",
+             command);
+
+    printf("\nSent: %s\n", command);
+
+    if (send_all(sockfd, request, strlen(request)) < 0)
+    {
+        perror("send");
+        return -1;
+    }
+
+    if (receive_line(sockfd, response, sizeof(response)) < 0)
+    {
+        printf("Failed to receive response.\n");
+        return -1;
+    }
+
+    printf("Agent: %s\n", response);
+
+    return 0;
+}
+
+
+/* ============================================================
+   PUT
+   ============================================================ */
+
+int put_file(int sockfd)
+{
+    FILE *file;
+
+    long filesize;
+
+    char *data;
+
+    char request[LINE_SIZE];
+
+    char response[LINE_SIZE];
+
+    file = fopen(TEST_FILE, "rb");
+
+    if (file == NULL)
+    {
+        perror("fopen test.txt");
+        return -1;
+    }
+
+    fseek(file, 0, SEEK_END);
+
+    filesize = ftell(file);
+
+    fseek(file, 0, SEEK_SET);
+
+    if (filesize < 0)
+    {
+        fclose(file);
+        return -1;
+    }
+
+    data = malloc(filesize);
+
+    if (data == NULL)
+    {
+        printf("Memory allocation failed.\n");
+        fclose(file);
+        return -1;
+    }
+
+    if (fread(data, 1, filesize, file) != (size_t)filesize)
+    {
+        printf("Failed to read test file.\n");
+
+        free(data);
+        fclose(file);
+
+        return -1;
+    }
+
+    fclose(file);
+
+    snprintf(request,
+             sizeof(request),
+             "PUT %s %ld\n",
+             TEST_FILE,
+             filesize);
+
+    printf("\nSent: PUT %s %ld\n",
+           TEST_FILE,
+           filesize);
+
+    if (send_all(sockfd, request, strlen(request)) < 0)
+    {
+        free(data);
+        return -1;
+    }
+
+    if (send_all(sockfd, data, filesize) < 0)
+    {
+        free(data);
+        return -1;
+    }
+
+    printf("Sent %ld raw file bytes\n", filesize);
+
+    free(data);
+
+    if (receive_line(sockfd, response, sizeof(response)) < 0)
+    {
+        printf("Failed to receive PUT response.\n");
+        return -1;
+    }
+
+    printf("Agent: %s\n", response);
+
+    return 0;
+}
+
+
+/* ============================================================
+   GET
+   ============================================================ */
+
+int get_file(int sockfd)
+{
+    char request[LINE_SIZE];
+
+    char response[LINE_SIZE];
+
+    char filename[256];
+
+    long filesize;
+
+    char *data;
+
+    snprintf(request,
+             sizeof(request),
+             "GET %s\n",
+             TEST_FILE);
+
+    printf("\nSent: GET %s\n", TEST_FILE);
+
+    if (send_all(sockfd, request, strlen(request)) < 0)
+    {
+        return -1;
+    }
+
+    if (receive_line(sockfd, response, sizeof(response)) < 0)
+    {
+        printf("Failed to receive GET response.\n");
+        return -1;
+    }
+
+    printf("Agent: %s\n", response);
+
+    if (sscanf(response,
+               "OK FILE_SEND %255s %ld",
+               filename,
+               &filesize) != 2)
+    {
+        printf("Invalid GET response.\n");
+        return -1;
+    }
+
+    data = malloc(filesize);
+
+    if (data == NULL)
+    {
+        printf("Memory allocation failed.\n");
+        return -1;
+    }
+
+    if (receive_all(sockfd, data, filesize) < 0)
+    {
+        printf("Failed to receive file data.\n");
+
+        free(data);
+
+        return -1;
+    }
+
+    printf("Received %ld raw file bytes\n", filesize);
+
+    FILE *file = fopen(DOWNLOAD_FILE, "wb");
+
+    if (file == NULL)
+    {
+        perror("fopen downloaded file");
+
+        free(data);
+
+        return -1;
+    }
+
+    fwrite(data, 1, filesize, file);
+
+    fclose(file);
+
+    free(data);
+
+    printf("Saved downloaded file as %s\n",
+           DOWNLOAD_FILE);
+
+    return 0;
+}
+
+
+/* ============================================================
+   UDP monitoring
+   ============================================================ */
+
+int start_udp_monitor(int tcp_sockfd)
+{
+    int udp_sockfd;
+
+    struct sockaddr_in udp_addr;
+
+    char request[LINE_SIZE];
+
+    char response[LINE_SIZE];
+
+    char udp_buffer[BUFFER_SIZE];
+
+    struct sockaddr_in sender_addr;
+
+    socklen_t sender_length;
+
+    udp_sockfd = socket(AF_INET,
+                        SOCK_DGRAM,
+                        0);
+
+    if (udp_sockfd < 0)
+    {
+        perror("UDP socket");
+        return -1;
+    }
+
+    memset(&udp_addr, 0, sizeof(udp_addr));
+
+    udp_addr.sin_family = AF_INET;
+
+    udp_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    udp_addr.sin_port = htons(UDP_PORT);
+
+    if (bind(udp_sockfd,
+             (struct sockaddr *)&udp_addr,
+             sizeof(udp_addr)) < 0)
+    {
+        perror("UDP bind");
+
+        close(udp_sockfd);
+
+        return -1;
+    }
+
+    printf("\n--- UDP MONITORING ---\n");
+
+    printf("UDP listening port: %d\n",
+           UDP_PORT);
+
+    snprintf(request,
+             sizeof(request),
+             "MONITOR START %d\n",
+             UDP_PORT);
+
+    printf("Sent: MONITOR START %d\n",
+           UDP_PORT);
+
+    if (send_all(tcp_sockfd,
+                 request,
+                 strlen(request)) < 0)
+    {
+        close(udp_sockfd);
+
+        return -1;
+    }
+
+    if (receive_line(tcp_sockfd,
+                     response,
+                     sizeof(response)) < 0)
+    {
+        printf("Failed to receive MONITOR START response.\n");
+
+        close(udp_sockfd);
+
+        return -1;
+    }
+
+    printf("Agent: %s\n", response);
+
+    if (strstr(response,
+               "OK MONITOR_STARTED") == NULL)
+    {
+        printf("Monitoring did not start.\n");
+
+        close(udp_sockfd);
+
+        return -1;
+    }
+
+    printf("\nWaiting for UDP monitoring packets...\n");
+
+    /*
+     * Receive approximately 3 monitoring packets.
+     * The Agent sends one every 2 seconds.
+     */
+
+    for (int i = 0; i < 3; i++)
+    {
+        sender_length = sizeof(sender_addr);
+
+        ssize_t received = recvfrom(
+            udp_sockfd,
+            udp_buffer,
+            sizeof(udp_buffer) - 1,
+            0,
+            (struct sockaddr *)&sender_addr,
+            &sender_length
+        );
+
+        if (received < 0)
+        {
+            perror("recvfrom");
+            break;
+        }
+
+        udp_buffer[received] = '\0';
+
+        printf("UDP Monitor: %s\n",
+               udp_buffer);
+    }
+
+    /*
+     * Stop monitoring through TCP.
+     */
+
+    printf("\nSent: MONITOR STOP\n");
+
+    if (send_all(tcp_sockfd,
+                 "MONITOR STOP\n",
+                 strlen("MONITOR STOP\n")) < 0)
+    {
+        close(udp_sockfd);
+
+        return -1;
+    }
+
+    if (receive_line(tcp_sockfd,
+                     response,
+                     sizeof(response)) < 0)
+    {
+        printf("Failed to receive MONITOR STOP response.\n");
+
+        close(udp_sockfd);
+
+        return -1;
+    }
+
+    printf("Agent: %s\n", response);
+
+    if (strstr(response,
+               "OK MONITOR_STOPPED") != NULL)
+    {
+        printf("UDP monitoring stopped successfully.\n");
+    }
+
+    close(udp_sockfd);
+
+    return 0;
+}
+
+
+/* ============================================================
+   Main
+   ============================================================ */
+
+int main(void)
+{
+    int sockfd;
+
+    printf("========================================\n");
+    printf("        RemoteOps Controller\n");
+    printf("========================================\n");
+
+    printf("SID: %s\n", SID);
+
+    printf("Connecting to Agent %s:%d\n",
+           SERVER_IP,
+           SERVER_PORT);
+
+    sockfd = connect_to_agent();
+
+    if (sockfd < 0)
+    {
+        printf("Could not connect to Agent.\n");
         return 1;
     }
 
-    printf("Agent: %s",
-           buffer);
+    printf("Connected to Agent successfully.\n");
 
     /*
-     * Check authentication.
+     * AUTH must be the first command.
      */
-    if (strncmp(buffer,
-                "OK AUTHENTICATED",
-                strlen("OK AUTHENTICATED")) != 0)
+
+    if (authenticate(sockfd) < 0)
     {
-        printf("Authentication failed. Closing connection.\n");
-
-        close(sock);
-
+        close(sockfd);
         return 1;
     }
 
     /*
      * SYSINFO
      */
-    const char *sysinfo_command =
-        "SYSINFO\n";
 
-    send_all(sock,
-             sysinfo_command,
-             strlen(sysinfo_command));
-
-    printf("Sent: SYSINFO\n");
-
-    memset(buffer,
-           0,
-           sizeof(buffer));
-
-    bytes_received =
-        receive_line(sock,
-                     buffer,
-                     sizeof(buffer));
-
-    if (bytes_received <= 0)
-    {
-        printf("Failed to receive SYSINFO response\n");
-
-        close(sock);
-
-        return 1;
-    }
-
-    printf("Agent: %s",
-           buffer);
+    send_command(sockfd, "SYSINFO");
 
     /*
      * LISTPROC
      */
-    const char *listproc_command =
-        "LISTPROC\n";
 
-    send_all(sock,
-             listproc_command,
-             strlen(listproc_command));
-
-    printf("Sent: LISTPROC\n");
-
-    memset(buffer,
-           0,
-           sizeof(buffer));
-
-    bytes_received =
-        receive_line(sock,
-                     buffer,
-                     sizeof(buffer));
-
-    if (bytes_received <= 0)
-    {
-        printf("Failed to receive LISTPROC response\n");
-
-        close(sock);
-
-        return 1;
-    }
-
-    printf("Agent: %s",
-           buffer);
+    send_command(sockfd, "LISTPROC");
 
     /*
-     * EXEC DATE
+     * EXEC commands
      */
-    if (!send_exec_command(sock,
-                           buffer,
-                           sizeof(buffer),
-                           "DATE"))
-    {
-        close(sock);
 
-        return 1;
-    }
+    send_command(sockfd, "EXEC DATE");
+
+    send_command(sockfd, "EXEC UPTIME");
+
+    send_command(sockfd, "EXEC DISKFREE");
+
+    send_command(sockfd, "EXEC HOSTNAME");
+
+    send_command(sockfd, "EXEC WHOAMI");
 
     /*
-     * EXEC UPTIME
+     * Test invalid EXEC command.
      */
-    if (!send_exec_command(sock,
-                           buffer,
-                           sizeof(buffer),
-                           "UPTIME"))
-    {
-        close(sock);
 
-        return 1;
-    }
+    send_command(sockfd, "EXEC LS");
 
     /*
-     * EXEC DISKFREE
+     * PUT
      */
-    if (!send_exec_command(sock,
-                           buffer,
-                           sizeof(buffer),
-                           "DISKFREE"))
-    {
-        close(sock);
 
-        return 1;
-    }
+    put_file(sockfd);
 
     /*
-     * EXEC HOSTNAME
+     * GET
      */
-    if (!send_exec_command(sock,
-                           buffer,
-                           sizeof(buffer),
-                           "HOSTNAME"))
-    {
-        close(sock);
 
-        return 1;
-    }
+    get_file(sockfd);
 
     /*
-     * EXEC WHOAMI
+     * UDP MONITORING
      */
-    if (!send_exec_command(sock,
-                           buffer,
-                           sizeof(buffer),
-                           "WHOAMI"))
-    {
-        close(sock);
 
-        return 1;
-    }
+    start_udp_monitor(sockfd);
 
     /*
-     * PUT test.txt
+     * Graceful disconnect
      */
-    if (!put_file(sock,
-                  TEST_FILE))
-    {
-        close(sock);
-
-        return 1;
-    }
-
-    /*
-     * GET test.txt
-     */
-    if (!get_file(sock,
-                  TEST_FILE,
-                  DOWNLOAD_FILE))
-    {
-        close(sock);
-
-        return 1;
-    }
-
-    /*
-     * QUIT
-     */
-    const char *quit_command =
-        "QUIT\n";
-
-    send_all(sock,
-             quit_command,
-             strlen(quit_command));
 
     printf("\nSent: QUIT\n");
 
-    memset(buffer,
-           0,
-           sizeof(buffer));
-
-    bytes_received =
-        receive_line(sock,
-                     buffer,
-                     sizeof(buffer));
-
-    if (bytes_received > 0)
+    if (send_all(sockfd,
+                 "QUIT\n",
+                 strlen("QUIT\n")) == 0)
     {
-        printf("Agent: %s",
-               buffer);
+        char response[LINE_SIZE];
+
+        if (receive_line(sockfd,
+                         response,
+                         sizeof(response)) == 0)
+        {
+            printf("Agent: %s\n", response);
+        }
     }
 
-    /*
-     * Close connection.
-     */
-    close(sock);
+    close(sockfd);
 
-    printf("Connection closed\n");
+    printf("\nController finished successfully.\n");
 
     return 0;
 }
