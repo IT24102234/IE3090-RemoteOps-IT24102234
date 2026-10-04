@@ -42,7 +42,9 @@ int receive_line(int socket_fd, char *buffer, int buffer_size)
 /*
  * Get current system information.
  */
-void get_sysinfo(double *cpu_load, long *mem_used_mb, long *uptime_sec)
+void get_sysinfo(double *cpu_load,
+                 long *mem_used_mb,
+                 long *uptime_sec)
 {
     FILE *file;
     char line[256];
@@ -74,12 +76,15 @@ void get_sysinfo(double *cpu_load, long *mem_used_mb, long *uptime_sec)
     {
         while (fgets(line, sizeof(line), file) != NULL)
         {
-            if (sscanf(line, "MemTotal: %ld kB", &mem_total) == 1)
+            if (sscanf(line,
+                       "MemTotal: %ld kB",
+                       &mem_total) == 1)
             {
                 continue;
             }
 
-            if (sscanf(line, "MemAvailable: %ld kB",
+            if (sscanf(line,
+                       "MemAvailable: %ld kB",
                        &mem_available) == 1)
             {
                 continue;
@@ -114,10 +119,7 @@ void get_sysinfo(double *cpu_load, long *mem_used_mb, long *uptime_sec)
 }
 
 /*
- * Get a snapshot of currently running processes.
- *
- * The assignment allows a simple ps-based snapshot.
- * We return up to 10 processes as PID:process_name pairs.
+ * Get a snapshot of running processes.
  */
 void get_process_list(char *output, int output_size)
 {
@@ -143,7 +145,8 @@ void get_process_list(char *output, int output_size)
         int pid;
         char process_name[128];
 
-        if (sscanf(line, "%d %127s",
+        if (sscanf(line,
+                   "%d %127s",
                    &pid,
                    process_name) == 2)
         {
@@ -173,6 +176,106 @@ void get_process_list(char *output, int output_size)
     pclose(file);
 }
 
+/*
+ * Execute one of the five allowed commands.
+ */
+void execute_command(int client_fd,
+                     const char *command_name)
+{
+    const char *system_command = NULL;
+
+    /*
+     * Fixed EXEC whitelist.
+     */
+    if (strcmp(command_name, "DATE") == 0)
+    {
+        system_command = "date";
+    }
+    else if (strcmp(command_name, "UPTIME") == 0)
+    {
+        system_command = "uptime";
+    }
+    else if (strcmp(command_name, "DISKFREE") == 0)
+    {
+        system_command = "df -h / | tail -n 1";
+    }
+    else if (strcmp(command_name, "HOSTNAME") == 0)
+    {
+        system_command = "hostname";
+    }
+    else if (strcmp(command_name, "WHOAMI") == 0)
+    {
+        system_command = "whoami";
+    }
+    else
+    {
+        const char *response =
+            "ERR 002 COMMAND_NOT_ALLOWED SID:4322\n";
+
+        send(client_fd,
+             response,
+             strlen(response),
+             0);
+
+        printf("EXEC command rejected: %s\n",
+               command_name);
+
+        return;
+    }
+
+    /*
+     * Execute only the approved command.
+     */
+    FILE *command_file =
+        popen(system_command, "r");
+
+    if (command_file == NULL)
+    {
+        const char *response =
+            "ERR 003 EXEC_FAILED SID:4322\n";
+
+        send(client_fd,
+             response,
+             strlen(response),
+             0);
+
+        return;
+    }
+
+    char output[1024];
+
+    if (fgets(output,
+              sizeof(output),
+              command_file) != NULL)
+    {
+        /*
+         * Remove newline characters.
+         */
+        output[strcspn(output, "\r\n")] = '\0';
+    }
+    else
+    {
+        strcpy(output, "No output");
+    }
+
+    pclose(command_file);
+
+    char response[1200];
+
+    snprintf(response,
+             sizeof(response),
+             "OK EXEC_RESULT %s SID:4322\n",
+             output);
+
+    send(client_fd,
+         response,
+         strlen(response),
+         0);
+
+    printf("EXEC %s processed\n",
+           command_name);
+}
+
 int main(void)
 {
     int server_fd;
@@ -181,12 +284,16 @@ int main(void)
     struct sockaddr_in server_addr;
     struct sockaddr_in client_addr;
 
-    socklen_t client_len = sizeof(client_addr);
+    socklen_t client_len =
+        sizeof(client_addr);
 
     /*
      * Create TCP socket.
      */
-    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    server_fd =
+        socket(AF_INET,
+               SOCK_STREAM,
+               0);
 
     if (server_fd < 0)
     {
@@ -195,7 +302,7 @@ int main(void)
     }
 
     /*
-     * Allow the port to be reused quickly.
+     * Allow port reuse.
      */
     int opt = 1;
 
@@ -214,12 +321,17 @@ int main(void)
            0,
            sizeof(server_addr));
 
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(PORT);
+    server_addr.sin_family =
+        AF_INET;
+
+    server_addr.sin_addr.s_addr =
+        INADDR_ANY;
+
+    server_addr.sin_port =
+        htons(PORT);
 
     /*
-     * Bind socket to personalized port.
+     * Bind to port 9410.
      */
     if (bind(server_fd,
              (struct sockaddr *)&server_addr,
@@ -231,7 +343,7 @@ int main(void)
     }
 
     /*
-     * Start listening for Controllers.
+     * Listen for Controllers.
      */
     if (listen(server_fd, 5) < 0)
     {
@@ -249,9 +361,10 @@ int main(void)
      */
     while (1)
     {
-        client_fd = accept(server_fd,
-                           (struct sockaddr *)&client_addr,
-                           &client_len);
+        client_fd =
+            accept(server_fd,
+                   (struct sockaddr *)&client_addr,
+                   &client_len);
 
         if (client_fd < 0)
         {
@@ -264,7 +377,7 @@ int main(void)
         char buffer[1024];
 
         /*
-         * The first command MUST be AUTH.
+         * First command MUST be AUTH.
          */
         int bytes_received =
             receive_line(client_fd,
@@ -274,12 +387,14 @@ int main(void)
         if (bytes_received <= 0)
         {
             printf("Controller disconnected before authentication\n");
+
             close(client_fd);
+
             continue;
         }
 
         /*
-         * Build the expected authentication message.
+         * Build expected authentication message.
          */
         char expected_auth[100];
 
@@ -289,9 +404,10 @@ int main(void)
                  AUTH_TOKEN);
 
         /*
-         * Check authentication.
+         * Authenticate.
          */
-        if (strcmp(buffer, expected_auth) == 0)
+        if (strcmp(buffer,
+                   expected_auth) == 0)
         {
             const char *response =
                 "OK AUTHENTICATED SID:4322\n";
@@ -304,7 +420,7 @@ int main(void)
             printf("Controller authenticated successfully\n");
 
             /*
-             * Process commands after authentication.
+             * Process commands.
              */
             while (1)
             {
@@ -320,9 +436,10 @@ int main(void)
                 }
 
                 /*
-                 * SYSINFO command
+                 * SYSINFO
                  */
-                if (strcmp(buffer, "SYSINFO\n") == 0)
+                if (strcmp(buffer,
+                           "SYSINFO\n") == 0)
                 {
                     double cpu_load;
                     long mem_used_mb;
@@ -350,9 +467,10 @@ int main(void)
                 }
 
                 /*
-                 * LISTPROC command
+                 * LISTPROC
                  */
-                else if (strcmp(buffer, "LISTPROC\n") == 0)
+                else if (strcmp(buffer,
+                                "LISTPROC\n") == 0)
                 {
                     char process_list[2048];
                     char response[2200];
@@ -374,9 +492,48 @@ int main(void)
                 }
 
                 /*
-                 * QUIT command
+                 * EXEC
                  */
-                else if (strcmp(buffer, "QUIT\n") == 0)
+                else if (strncmp(buffer,
+                                 "EXEC ",
+                                 5) == 0)
+                {
+                    char command_name[64];
+
+                    /*
+                     * Extract command name.
+                     */
+                    if (sscanf(buffer,
+                               "EXEC %63s",
+                               command_name) != 1)
+                    {
+                        const char *response =
+                            "ERR 002 COMMAND_NOT_ALLOWED SID:4322\n";
+
+                        send(client_fd,
+                             response,
+                             strlen(response),
+                             0);
+
+                        continue;
+                    }
+
+                    /*
+                     * Remove newline if present.
+                     */
+                    command_name[
+                        strcspn(command_name, "\r\n")
+                    ] = '\0';
+
+                    execute_command(client_fd,
+                                    command_name);
+                }
+
+                /*
+                 * QUIT
+                 */
+                else if (strcmp(buffer,
+                                "QUIT\n") == 0)
                 {
                     const char *response =
                         "OK BYE SID:4322\n";
@@ -392,7 +549,7 @@ int main(void)
                 }
 
                 /*
-                 * Unknown command
+                 * Unknown command.
                  */
                 else
                 {

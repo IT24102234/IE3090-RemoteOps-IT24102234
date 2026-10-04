@@ -12,14 +12,19 @@
 /*
  * Receive one line ending with '\n'.
  */
-int receive_line(int socket_fd, char *buffer, int buffer_size)
+int receive_line(int socket_fd,
+                 char *buffer,
+                 int buffer_size)
 {
     int total = 0;
     char ch;
 
     while (total < buffer_size - 1)
     {
-        int n = recv(socket_fd, &ch, 1, 0);
+        int n = recv(socket_fd,
+                     &ch,
+                     1,
+                     0);
 
         if (n <= 0)
         {
@@ -39,6 +44,50 @@ int receive_line(int socket_fd, char *buffer, int buffer_size)
     return total;
 }
 
+/*
+ * Send an EXEC command and display its response.
+ */
+int send_exec_command(int sock,
+                      char *buffer,
+                      int buffer_size,
+                      const char *command_name)
+{
+    char command[100];
+
+    snprintf(command,
+             sizeof(command),
+             "EXEC %s\n",
+             command_name);
+
+    send(sock,
+         command,
+         strlen(command),
+         0);
+
+    printf("Sent: EXEC %s\n",
+           command_name);
+
+    memset(buffer,
+           0,
+           buffer_size);
+
+    int bytes_received =
+        receive_line(sock,
+                     buffer,
+                     buffer_size);
+
+    if (bytes_received <= 0)
+    {
+        printf("Failed to receive EXEC response\n");
+        return 0;
+    }
+
+    printf("Agent: %s",
+           buffer);
+
+    return 1;
+}
+
 int main(void)
 {
     int sock;
@@ -50,7 +99,10 @@ int main(void)
     /*
      * Create TCP socket.
      */
-    sock = socket(AF_INET, SOCK_STREAM, 0);
+    sock =
+        socket(AF_INET,
+               SOCK_STREAM,
+               0);
 
     if (sock < 0)
     {
@@ -62,11 +114,14 @@ int main(void)
            0,
            sizeof(server_addr));
 
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(SERVER_PORT);
+    server_addr.sin_family =
+        AF_INET;
+
+    server_addr.sin_port =
+        htons(SERVER_PORT);
 
     /*
-     * Convert server IP address.
+     * Convert server IP.
      */
     if (inet_pton(AF_INET,
                   SERVER_IP,
@@ -92,7 +147,7 @@ int main(void)
     printf("Connected to RemoteOps Agent\n");
 
     /*
-     * Authentication
+     * AUTH
      */
     char auth_message[100];
 
@@ -106,7 +161,8 @@ int main(void)
          strlen(auth_message),
          0);
 
-    printf("Sent: AUTH %s\n", AUTH_TOKEN);
+    printf("Sent: AUTH %s\n",
+           AUTH_TOKEN);
 
     int bytes_received =
         receive_line(sock,
@@ -116,28 +172,34 @@ int main(void)
     if (bytes_received <= 0)
     {
         printf("Failed to receive authentication response\n");
+
         close(sock);
+
         return 1;
     }
 
-    printf("Agent: %s", buffer);
+    printf("Agent: %s",
+           buffer);
 
     /*
-     * Check authentication result.
+     * Check authentication.
      */
     if (strncmp(buffer,
                 "OK AUTHENTICATED",
                 strlen("OK AUTHENTICATED")) != 0)
     {
         printf("Authentication failed. Closing connection.\n");
+
         close(sock);
+
         return 1;
     }
 
     /*
      * SYSINFO
      */
-    const char *sysinfo_command = "SYSINFO\n";
+    const char *sysinfo_command =
+        "SYSINFO\n";
 
     send(sock,
          sysinfo_command,
@@ -158,16 +220,20 @@ int main(void)
     if (bytes_received <= 0)
     {
         printf("Failed to receive SYSINFO response\n");
+
         close(sock);
+
         return 1;
     }
 
-    printf("Agent: %s", buffer);
+    printf("Agent: %s",
+           buffer);
 
     /*
      * LISTPROC
      */
-    const char *listproc_command = "LISTPROC\n";
+    const char *listproc_command =
+        "LISTPROC\n";
 
     send(sock,
          listproc_command,
@@ -188,16 +254,80 @@ int main(void)
     if (bytes_received <= 0)
     {
         printf("Failed to receive LISTPROC response\n");
+
+        close(sock);
+
+        return 1;
+    }
+
+    printf("Agent: %s",
+           buffer);
+
+    /*
+     * EXEC DATE
+     */
+    if (!send_exec_command(sock,
+                           buffer,
+                           sizeof(buffer),
+                           "DATE"))
+    {
         close(sock);
         return 1;
     }
 
-    printf("Agent: %s", buffer);
+    /*
+     * EXEC UPTIME
+     */
+    if (!send_exec_command(sock,
+                           buffer,
+                           sizeof(buffer),
+                           "UPTIME"))
+    {
+        close(sock);
+        return 1;
+    }
+
+    /*
+     * EXEC DISKFREE
+     */
+    if (!send_exec_command(sock,
+                           buffer,
+                           sizeof(buffer),
+                           "DISKFREE"))
+    {
+        close(sock);
+        return 1;
+    }
+
+    /*
+     * EXEC HOSTNAME
+     */
+    if (!send_exec_command(sock,
+                           buffer,
+                           sizeof(buffer),
+                           "HOSTNAME"))
+    {
+        close(sock);
+        return 1;
+    }
+
+    /*
+     * EXEC WHOAMI
+     */
+    if (!send_exec_command(sock,
+                           buffer,
+                           sizeof(buffer),
+                           "WHOAMI"))
+    {
+        close(sock);
+        return 1;
+    }
 
     /*
      * QUIT
      */
-    const char *quit_command = "QUIT\n";
+    const char *quit_command =
+        "QUIT\n";
 
     send(sock,
          quit_command,
@@ -217,11 +347,12 @@ int main(void)
 
     if (bytes_received > 0)
     {
-        printf("Agent: %s", buffer);
+        printf("Agent: %s",
+               buffer);
     }
 
     /*
-     * Close TCP connection.
+     * Close connection.
      */
     close(sock);
 
