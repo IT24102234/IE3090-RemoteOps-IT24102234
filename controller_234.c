@@ -57,7 +57,8 @@ int main(void)
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(SERVER_PORT);
 
-    if (inet_pton(AF_INET, SERVER_IP,
+    if (inet_pton(AF_INET,
+                  SERVER_IP,
                   &server_addr.sin_addr) <= 0)
     {
         perror("inet_pton");
@@ -77,21 +78,7 @@ int main(void)
 
     printf("Connected to RemoteOps Agent\n");
 
-    /* Receive authentication request */
-    int bytes_received = receive_line(sock,
-                                      buffer,
-                                      sizeof(buffer));
-
-    if (bytes_received <= 0)
-    {
-        printf("Failed to receive authentication request\n");
-        close(sock);
-        return 1;
-    }
-
-    printf("Agent: %s", buffer);
-
-    /* Send authentication token */
+    /* Send authentication command */
     char auth_message[100];
 
     snprintf(auth_message,
@@ -104,9 +91,45 @@ int main(void)
          strlen(auth_message),
          0);
 
-    printf("Sent authentication token\n");
+    printf("Sent: AUTH %s\n", AUTH_TOKEN);
 
-    /* Receive authentication result */
+    /* Receive authentication response */
+    int bytes_received = receive_line(sock,
+                                      buffer,
+                                      sizeof(buffer));
+
+    if (bytes_received <= 0)
+    {
+        printf("Failed to receive authentication response\n");
+        close(sock);
+        return 1;
+    }
+
+    printf("Agent: %s", buffer);
+
+    /* Continue only if authentication succeeded */
+    if (strncmp(buffer,
+                "OK AUTHENTICATED",
+                strlen("OK AUTHENTICATED")) != 0)
+    {
+        printf("Authentication failed. Closing connection.\n");
+        close(sock);
+        return 1;
+    }
+
+    /*
+     * Send SYSINFO command
+     */
+    const char *sysinfo_command = "SYSINFO\n";
+
+    send(sock,
+         sysinfo_command,
+         strlen(sysinfo_command),
+         0);
+
+    printf("Sent: SYSINFO\n");
+
+    /* Receive SYSINFO response */
     memset(buffer, 0, sizeof(buffer));
 
     bytes_received = receive_line(sock,
@@ -115,14 +138,39 @@ int main(void)
 
     if (bytes_received <= 0)
     {
-        printf("Failed to receive authentication result\n");
+        printf("Failed to receive SYSINFO response\n");
         close(sock);
         return 1;
     }
 
     printf("Agent: %s", buffer);
 
+    /*
+     * Gracefully disconnect
+     */
+    const char *quit_command = "QUIT\n";
+
+    send(sock,
+         quit_command,
+         strlen(quit_command),
+         0);
+
+    printf("Sent: QUIT\n");
+
+    memset(buffer, 0, sizeof(buffer));
+
+    bytes_received = receive_line(sock,
+                                  buffer,
+                                  sizeof(buffer));
+
+    if (bytes_received > 0)
+    {
+        printf("Agent: %s", buffer);
+    }
+
     close(sock);
+
+    printf("Connection closed\n");
 
     return 0;
 }
