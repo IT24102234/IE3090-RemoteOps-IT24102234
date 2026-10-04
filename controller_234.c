@@ -9,7 +9,9 @@
 #define SERVER_PORT 9410
 #define AUTH_TOKEN "OPS-2234"
 
-/* Receive one line ending with '\n' */
+/*
+ * Receive one line ending with '\n'.
+ */
 int receive_line(int socket_fd, char *buffer, int buffer_size)
 {
     int total = 0;
@@ -40,10 +42,14 @@ int receive_line(int socket_fd, char *buffer, int buffer_size)
 int main(void)
 {
     int sock;
-    struct sockaddr_in server_addr;
-    char buffer[1024];
 
-    /* Create TCP socket */
+    struct sockaddr_in server_addr;
+
+    char buffer[4096];
+
+    /*
+     * Create TCP socket.
+     */
     sock = socket(AF_INET, SOCK_STREAM, 0);
 
     if (sock < 0)
@@ -52,11 +58,16 @@ int main(void)
         return 1;
     }
 
-    memset(&server_addr, 0, sizeof(server_addr));
+    memset(&server_addr,
+           0,
+           sizeof(server_addr));
 
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(SERVER_PORT);
 
+    /*
+     * Convert server IP address.
+     */
     if (inet_pton(AF_INET,
                   SERVER_IP,
                   &server_addr.sin_addr) <= 0)
@@ -66,7 +77,9 @@ int main(void)
         return 1;
     }
 
-    /* Connect to Agent */
+    /*
+     * Connect to Agent.
+     */
     if (connect(sock,
                 (struct sockaddr *)&server_addr,
                 sizeof(server_addr)) < 0)
@@ -78,7 +91,9 @@ int main(void)
 
     printf("Connected to RemoteOps Agent\n");
 
-    /* Send authentication command */
+    /*
+     * Authentication
+     */
     char auth_message[100];
 
     snprintf(auth_message,
@@ -93,10 +108,10 @@ int main(void)
 
     printf("Sent: AUTH %s\n", AUTH_TOKEN);
 
-    /* Receive authentication response */
-    int bytes_received = receive_line(sock,
-                                      buffer,
-                                      sizeof(buffer));
+    int bytes_received =
+        receive_line(sock,
+                     buffer,
+                     sizeof(buffer));
 
     if (bytes_received <= 0)
     {
@@ -107,7 +122,9 @@ int main(void)
 
     printf("Agent: %s", buffer);
 
-    /* Continue only if authentication succeeded */
+    /*
+     * Check authentication result.
+     */
     if (strncmp(buffer,
                 "OK AUTHENTICATED",
                 strlen("OK AUTHENTICATED")) != 0)
@@ -118,7 +135,7 @@ int main(void)
     }
 
     /*
-     * Send SYSINFO command
+     * SYSINFO
      */
     const char *sysinfo_command = "SYSINFO\n";
 
@@ -129,12 +146,14 @@ int main(void)
 
     printf("Sent: SYSINFO\n");
 
-    /* Receive SYSINFO response */
-    memset(buffer, 0, sizeof(buffer));
+    memset(buffer,
+           0,
+           sizeof(buffer));
 
-    bytes_received = receive_line(sock,
-                                  buffer,
-                                  sizeof(buffer));
+    bytes_received =
+        receive_line(sock,
+                     buffer,
+                     sizeof(buffer));
 
     if (bytes_received <= 0)
     {
@@ -146,7 +165,37 @@ int main(void)
     printf("Agent: %s", buffer);
 
     /*
-     * Gracefully disconnect
+     * LISTPROC
+     */
+    const char *listproc_command = "LISTPROC\n";
+
+    send(sock,
+         listproc_command,
+         strlen(listproc_command),
+         0);
+
+    printf("Sent: LISTPROC\n");
+
+    memset(buffer,
+           0,
+           sizeof(buffer));
+
+    bytes_received =
+        receive_line(sock,
+                     buffer,
+                     sizeof(buffer));
+
+    if (bytes_received <= 0)
+    {
+        printf("Failed to receive LISTPROC response\n");
+        close(sock);
+        return 1;
+    }
+
+    printf("Agent: %s", buffer);
+
+    /*
+     * QUIT
      */
     const char *quit_command = "QUIT\n";
 
@@ -157,17 +206,23 @@ int main(void)
 
     printf("Sent: QUIT\n");
 
-    memset(buffer, 0, sizeof(buffer));
+    memset(buffer,
+           0,
+           sizeof(buffer));
 
-    bytes_received = receive_line(sock,
-                                  buffer,
-                                  sizeof(buffer));
+    bytes_received =
+        receive_line(sock,
+                     buffer,
+                     sizeof(buffer));
 
     if (bytes_received > 0)
     {
         printf("Agent: %s", buffer);
     }
 
+    /*
+     * Close TCP connection.
+     */
     close(sock);
 
     printf("Connection closed\n");
