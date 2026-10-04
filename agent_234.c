@@ -40,36 +40,154 @@ typedef struct
 } ClientSession;
 
 
+
 /*
- * Receive one line ending with '\n'.
+ * Per-connection TCP buffering.
+ *
+ * A single recv() may contain part of a line, several complete lines,
+ * or a line followed immediately by raw PUT file bytes. Unread bytes
+ * are kept in this buffer for the next operation.
  */
-int receive_line(int socket_fd,
-                 char *buffer,
-                 int buffer_size)
+#define TCP_BUFFER_SIZE 8192
+
+typedef struct
 {
-    int total = 0;
-    char ch;
+    int fd;
+    unsigned char data[TCP_BUFFER_SIZE];
+    size_t start;
+    size_t end;
+} BufferedSocket;
 
-    while (total < buffer_size - 1)
+
+/*
+ * Fill the receive buffer while preserving unread data.
+ */
+static int buffered_fill(BufferedSocket *stream)
+{
+    if (stream->start > 0)
     {
-        int n = recv(socket_fd, &ch, 1, 0);
-
-        if (n <= 0)
+        if (stream->start < stream->end)
         {
-            return n;
+            memmove(stream->data,
+                    stream->data + stream->start,
+                    stream->end - stream->start);
         }
 
-        buffer[total++] = ch;
-
-        if (ch == '\n')
-        {
-            break;
-        }
+        stream->end -= stream->start;
+        stream->start = 0;
     }
 
-    buffer[total] = '\0';
+    if (stream->end == TCP_BUFFER_SIZE)
+    {
+        return -2;
+    }
 
-    return total;
+    ssize_t received = recv(stream->fd,
+                            stream->data + stream->end,
+                            TCP_BUFFER_SIZE - stream->end,
+                            0);
+
+    if (received <= 0)
+    {
+        return (int)received;
+    }
+
+    stream->end += (size_t)received;
+    return (int)received;
+}
+
+
+/*
+ * Read one newline-terminated protocol line.
+ * Bytes after the newline remain buffered.
+ */
+static int buffered_read_line(BufferedSocket *stream,
+                               char *output,
+                               size_t output_size)
+{
+    while (1)
+    {
+        for (size_t i = stream->start; i < stream->end; i++)
+        {
+            if (stream->data[i] == '\n')
+            {
+                size_t line_length = i - stream->start + 1;
+
+                if (line_length >= output_size)
+                {
+                    return -2;
+                }
+
+                memcpy(output,
+                       stream->data + stream->start,
+                       line_length);
+
+                output[line_length] = '\0';
+                stream->start = i + 1;
+
+                return (int)line_length;
+            }
+        }
+
+        if (stream->end - stream->start >= output_size - 1)
+        {
+            return -2;
+        }
+
+        int result = buffered_fill(stream);
+
+        if (result <= 0)
+        {
+            return result;
+        }
+    }
+}
+
+
+/*
+ * Read exactly the requested number of bytes.
+ * Used for raw PUT file data after the PUT header.
+ */
+static int buffered_read_exact(BufferedSocket *stream,
+                                void *output,
+                                size_t total_bytes)
+{
+    unsigned char *destination = output;
+    size_t total_read = 0;
+
+    while (total_read < total_bytes)
+    {
+        size_t available = stream->end - stream->start;
+
+        if (available > 0)
+        {
+            size_t needed = total_bytes - total_read;
+            size_t copy_size =
+                available < needed ? available : needed;
+
+            memcpy(destination + total_read,
+                   stream->data + stream->start,
+                   copy_size);
+
+            stream->start += copy_size;
+            total_read += copy_size;
+            continue;
+        }
+
+        ssize_t received = recv(stream->fd,
+                                destination + total_read,
+                                total_bytes - total_read,
+                                0);
+
+        if (received <= 0)
+        {
+            return -1;
+        }
+
+        total_read += (size_t)received;
+    }
+
+    return 0;
 }
 
 
@@ -96,35 +214,6 @@ int send_all(int socket_fd,
         }
 
         total_sent += (size_t)n;
-    }
-
-    return 0;
-}
-
-
-/*
- * Receive exactly the requested number of bytes.
- */
-int receive_all(int socket_fd,
-                void *data,
-                size_t total_bytes)
-{
-    char *ptr = data;
-    size_t total_received = 0;
-
-    while (total_received < total_bytes)
-    {
-        ssize_t n = recv(socket_fd,
-                         ptr + total_received,
-                         total_bytes - total_received,
-                         0);
-
-        if (n <= 0)
-        {
-            return -1;
-        }
-
-        total_received += (size_t)n;
     }
 
     return 0;
@@ -409,8 +498,8 @@ void execute_command(int client_fd,
 /*
  * Handle PUT.
  */
-int handle_put(int client_fd,
-               char *buffer)
+int handle_put(BufferedSocket *stream,
+                char *buffer)
 {
     char filename[256];
     unsigned long long filesize;
@@ -423,7 +512,7 @@ int handle_put(int client_fd,
         const char *response =
             "ERR 004 FILE_TOO_LARGE SID:4322\n";
 
-        send_all(client_fd,
+        send_all(stream->fd,
                  response,
                  strlen(response));
 
@@ -435,7 +524,7 @@ int handle_put(int client_fd,
         const char *response =
             "ERR 004 FILE_TOO_LARGE SID:4322\n";
 
-        send_all(client_fd,
+        send_all(stream->fd,
                  response,
                  strlen(response));
 
@@ -447,7 +536,7 @@ int handle_put(int client_fd,
         const char *response =
             "ERR 004 FILE_TOO_LARGE SID:4322\n";
 
-        send_all(client_fd,
+        send_all(stream->fd,
                  response,
                  strlen(response));
 
@@ -473,7 +562,7 @@ int handle_put(int client_fd,
         const char *response =
             "ERR 003 FILE_WRITE_FAILED SID:4322\n";
 
-        send_all(client_fd,
+        send_all(stream->fd,
                  response,
                  strlen(response));
 
@@ -492,7 +581,7 @@ int handle_put(int client_fd,
             ? sizeof(data)
             : (size_t)remaining;
 
-        if (receive_all(client_fd,
+        if (buffered_read_exact(stream,
                         data,
                         chunk_size) < 0)
         {
@@ -517,7 +606,7 @@ int handle_put(int client_fd,
             const char *response =
                 "ERR 003 FILE_WRITE_FAILED SID:4322\n";
 
-            send_all(client_fd,
+            send_all(stream->fd,
                      response,
                      strlen(response));
 
@@ -536,7 +625,7 @@ int handle_put(int client_fd,
              "OK FILE_RECEIVED %s SID:4322\n",
              filename);
 
-    send_all(client_fd,
+    send_all(stream->fd,
              response,
              strlen(response));
 
@@ -892,6 +981,13 @@ void *controller_worker(void *arg)
     int client_fd =
         session->client_fd;
 
+    BufferedSocket stream =
+    {
+        .fd = client_fd,
+        .start = 0,
+        .end = 0
+    };
+
     printf("Controller connected from %s:%d\n",
            inet_ntoa(session->client_addr.sin_addr),
            ntohs(session->client_addr.sin_port));
@@ -902,7 +998,7 @@ void *controller_worker(void *arg)
      * First command MUST be AUTH.
      */
     int bytes_received =
-        receive_line(client_fd,
+        buffered_read_line(&stream,
                      buffer,
                      sizeof(buffer));
 
@@ -968,7 +1064,7 @@ void *controller_worker(void *arg)
     while (1)
     {
         bytes_received =
-            receive_line(client_fd,
+            buffered_read_line(&stream,
                          buffer,
                          sizeof(buffer));
 
@@ -1076,7 +1172,7 @@ void *controller_worker(void *arg)
                          "PUT ",
                          4) == 0)
         {
-            handle_put(client_fd,
+            handle_put(&stream,
                        buffer);
         }
 

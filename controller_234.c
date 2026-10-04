@@ -57,20 +57,143 @@ int send_all(int sockfd, const void *buffer, size_t length)
 }
 
 
-/* ============================================================
-   Receive exactly the requested number of bytes
-   ============================================================ */
 
-int receive_all(int sockfd, void *buffer, size_t length)
+/*
+ * Per-connection TCP buffering.
+ *
+ * TCP is a byte stream, so one recv() can contain a partial line,
+ * multiple lines, or a line followed by raw GET file bytes.
+ * Unread bytes remain in this buffer for the next operation.
+ */
+#define TCP_BUFFER_SIZE 8192
+
+typedef struct
 {
-    size_t total_received = 0;
-    char *data = (char *)buffer;
+    int fd;
+    unsigned char data[TCP_BUFFER_SIZE];
+    size_t start;
+    size_t end;
+} BufferedSocket;
 
-    while (total_received < length)
+
+/*
+ * Fill the receive buffer while preserving unread bytes.
+ */
+static int buffered_fill(BufferedSocket *stream)
+{
+    if (stream->start > 0)
     {
-        ssize_t received = recv(sockfd,
-                                data + total_received,
-                                length - total_received,
+        if (stream->start < stream->end)
+        {
+            memmove(stream->data,
+                    stream->data + stream->start,
+                    stream->end - stream->start);
+        }
+
+        stream->end -= stream->start;
+        stream->start = 0;
+    }
+
+    if (stream->end == TCP_BUFFER_SIZE)
+    {
+        return -2;
+    }
+
+    ssize_t received = recv(stream->fd,
+                            stream->data + stream->end,
+                            TCP_BUFFER_SIZE - stream->end,
+                            0);
+
+    if (received <= 0)
+    {
+        return (int)received;
+    }
+
+    stream->end += (size_t)received;
+    return (int)received;
+}
+
+
+/*
+ * Read one newline-terminated protocol line.
+ * Bytes after the newline remain buffered.
+ */
+static int buffered_read_line(BufferedSocket *stream,
+                               char *output,
+                               size_t output_size)
+{
+    while (1)
+    {
+        for (size_t i = stream->start; i < stream->end; i++)
+        {
+            if (stream->data[i] == '\n')
+            {
+                size_t line_length = i - stream->start + 1;
+
+                if (line_length >= output_size)
+                {
+                    return -2;
+                }
+
+                memcpy(output,
+                       stream->data + stream->start,
+                       line_length);
+
+                output[line_length] = '\0';
+                stream->start = i + 1;
+
+                return (int)line_length;
+            }
+        }
+
+        if (stream->end - stream->start >= output_size - 1)
+        {
+            return -2;
+        }
+
+        int result = buffered_fill(stream);
+
+        if (result <= 0)
+        {
+            return result;
+        }
+    }
+}
+
+
+/*
+ * Read exactly the requested number of bytes.
+ * Used for the raw GET payload after its response header.
+ */
+static int buffered_read_exact(BufferedSocket *stream,
+                                void *output,
+                                size_t total_bytes)
+{
+    unsigned char *destination = output;
+    size_t total_read = 0;
+
+    while (total_read < total_bytes)
+    {
+        size_t available = stream->end - stream->start;
+
+        if (available > 0)
+        {
+            size_t needed = total_bytes - total_read;
+            size_t copy_size =
+                available < needed ? available : needed;
+
+            memcpy(destination + total_read,
+                   stream->data + stream->start,
+                   copy_size);
+
+            stream->start += copy_size;
+            total_read += copy_size;
+            continue;
+        }
+
+        ssize_t received = recv(stream->fd,
+                                destination + total_read,
+                                total_bytes - total_read,
                                 0);
 
         if (received <= 0)
@@ -78,45 +201,8 @@ int receive_all(int sockfd, void *buffer, size_t length)
             return -1;
         }
 
-        total_received += received;
+        total_read += (size_t)received;
     }
-
-    return 0;
-}
-
-
-/* ============================================================
-   Receive one line ending with newline
-   ============================================================ */
-
-int receive_line(int sockfd, char *buffer, size_t size)
-{
-    size_t index = 0;
-
-    while (index < size - 1)
-    {
-        char c;
-
-        ssize_t received = recv(sockfd, &c, 1, 0);
-
-        if (received <= 0)
-        {
-            return -1;
-        }
-
-        if (c == '\n')
-        {
-            buffer[index] = '\0';
-            return 0;
-        }
-
-        if (c != '\r')
-        {
-            buffer[index++] = c;
-        }
-    }
-
-    buffer[size - 1] = '\0';
 
     return 0;
 }
@@ -177,7 +263,7 @@ int connect_to_agent(void)
    Authentication
    ============================================================ */
 
-int authenticate(int sockfd)
+int authenticate(BufferedSocket *stream)
 {
     char response[LINE_SIZE];
 
@@ -193,7 +279,7 @@ int authenticate(int sockfd)
              "AUTH %s\n",
              AUTH_TOKEN);
 
-    if (send_all(sockfd,
+    if (send_all(stream->fd,
                  request,
                  strlen(request)) < 0)
     {
@@ -202,7 +288,7 @@ int authenticate(int sockfd)
         return -1;
     }
 
-    if (receive_line(sockfd,
+    if (buffered_read_line(stream,
                      response,
                      sizeof(response)) < 0)
     {
@@ -231,8 +317,8 @@ int authenticate(int sockfd)
    Simple TCP command
    ============================================================ */
 
-int send_command(int sockfd,
-                 const char *command)
+int send_command(BufferedSocket *stream,
+                  const char *command)
 {
     char request[LINE_SIZE];
 
@@ -246,7 +332,7 @@ int send_command(int sockfd,
     printf("\nSent: %s\n",
            command);
 
-    if (send_all(sockfd,
+    if (send_all(stream->fd,
                  request,
                  strlen(request)) < 0)
     {
@@ -255,7 +341,7 @@ int send_command(int sockfd,
         return -1;
     }
 
-    if (receive_line(sockfd,
+    if (buffered_read_line(stream,
                      response,
                      sizeof(response)) < 0)
     {
@@ -275,7 +361,7 @@ int send_command(int sockfd,
    PUT
    ============================================================ */
 
-int put_file(int sockfd)
+int put_file(BufferedSocket *stream)
 {
     FILE *file;
 
@@ -346,7 +432,7 @@ int put_file(int sockfd)
            TEST_FILE,
            filesize);
 
-    if (send_all(sockfd,
+    if (send_all(stream->fd,
                  request,
                  strlen(request)) < 0)
     {
@@ -355,7 +441,7 @@ int put_file(int sockfd)
         return -1;
     }
 
-    if (send_all(sockfd,
+    if (send_all(stream->fd,
                  data,
                  filesize) < 0)
     {
@@ -369,7 +455,7 @@ int put_file(int sockfd)
 
     free(data);
 
-    if (receive_line(sockfd,
+    if (buffered_read_line(stream,
                      response,
                      sizeof(response)) < 0)
     {
@@ -389,7 +475,7 @@ int put_file(int sockfd)
    GET
    ============================================================ */
 
-int get_file(int sockfd)
+int get_file(BufferedSocket *stream)
 {
     char request[LINE_SIZE];
 
@@ -409,14 +495,14 @@ int get_file(int sockfd)
     printf("\nSent: GET %s\n",
            TEST_FILE);
 
-    if (send_all(sockfd,
+    if (send_all(stream->fd,
                  request,
                  strlen(request)) < 0)
     {
         return -1;
     }
 
-    if (receive_line(sockfd,
+    if (buffered_read_line(stream,
                      response,
                      sizeof(response)) < 0)
     {
@@ -447,7 +533,7 @@ int get_file(int sockfd)
         return -1;
     }
 
-    if (receive_all(sockfd,
+    if (buffered_read_exact(stream,
                     data,
                     filesize) < 0)
     {
@@ -492,7 +578,7 @@ int get_file(int sockfd)
    UDP Monitoring
    ============================================================ */
 
-int start_udp_monitor(int tcp_sockfd)
+int start_udp_monitor(BufferedSocket *stream)
 {
     int udp_sockfd;
 
@@ -551,7 +637,7 @@ int start_udp_monitor(int tcp_sockfd)
     printf("Sent: MONITOR START %d\n",
            udp_port);
 
-    if (send_all(tcp_sockfd,
+    if (send_all(stream->fd,
                  request,
                  strlen(request)) < 0)
     {
@@ -560,7 +646,7 @@ int start_udp_monitor(int tcp_sockfd)
         return -1;
     }
 
-    if (receive_line(tcp_sockfd,
+    if (buffered_read_line(stream,
                      response,
                      sizeof(response)) < 0)
     {
@@ -623,7 +709,7 @@ int start_udp_monitor(int tcp_sockfd)
 
     printf("\nSent: MONITOR STOP\n");
 
-    if (send_all(tcp_sockfd,
+    if (send_all(stream->fd,
                  "MONITOR STOP\n",
                  strlen("MONITOR STOP\n")) < 0)
     {
@@ -632,7 +718,7 @@ int start_udp_monitor(int tcp_sockfd)
         return -1;
     }
 
-    if (receive_line(tcp_sockfd,
+    if (buffered_read_line(stream,
                      response,
                      sizeof(response)) < 0)
     {
@@ -711,11 +797,18 @@ int main(int argc, char *argv[])
 
     printf("Connected to Agent successfully.\n");
 
+    BufferedSocket stream =
+    {
+        .fd = sockfd,
+        .start = 0,
+        .end = 0
+    };
+
     /*
      * AUTH must be the first command.
      */
 
-    if (authenticate(sockfd) < 0)
+    if (authenticate(&stream) < 0)
     {
         close(sockfd);
 
@@ -726,59 +819,59 @@ int main(int argc, char *argv[])
      * SYSINFO
      */
 
-    send_command(sockfd,
+    send_command(&stream,
                  "SYSINFO");
 
     /*
      * LISTPROC
      */
 
-    send_command(sockfd,
+    send_command(&stream,
                  "LISTPROC");
 
     /*
      * EXEC commands
      */
 
-    send_command(sockfd,
+    send_command(&stream,
                  "EXEC DATE");
 
-    send_command(sockfd,
+    send_command(&stream,
                  "EXEC UPTIME");
 
-    send_command(sockfd,
+    send_command(&stream,
                  "EXEC DISKFREE");
 
-    send_command(sockfd,
+    send_command(&stream,
                  "EXEC HOSTNAME");
 
-    send_command(sockfd,
+    send_command(&stream,
                  "EXEC WHOAMI");
 
     /*
      * Test invalid EXEC command.
      */
 
-    send_command(sockfd,
+    send_command(&stream,
                  "EXEC LS");
 
     /*
      * PUT
      */
 
-    put_file(sockfd);
+    put_file(&stream);
 
     /*
      * GET
      */
 
-    get_file(sockfd);
+    get_file(&stream);
 
     /*
      * UDP MONITORING
      */
 
-    start_udp_monitor(sockfd);
+    start_udp_monitor(&stream);
 
     /*
      * Graceful disconnect
@@ -786,13 +879,13 @@ int main(int argc, char *argv[])
 
     printf("\nSent: QUIT\n");
 
-    if (send_all(sockfd,
+    if (send_all(stream.fd,
                  "QUIT\n",
                  strlen("QUIT\n")) == 0)
     {
         char response[LINE_SIZE];
 
-        if (receive_line(sockfd,
+        if (buffered_read_line(&stream,
                          response,
                          sizeof(response)) == 0)
         {
