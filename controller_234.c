@@ -7,6 +7,35 @@
 
 #define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 9410
+#define AUTH_TOKEN "OPS-2234"
+
+/* Receive one line ending with '\n' */
+int receive_line(int socket_fd, char *buffer, int buffer_size)
+{
+    int total = 0;
+    char ch;
+
+    while (total < buffer_size - 1)
+    {
+        int n = recv(socket_fd, &ch, 1, 0);
+
+        if (n <= 0)
+        {
+            return n;
+        }
+
+        buffer[total++] = ch;
+
+        if (ch == '\n')
+        {
+            break;
+        }
+    }
+
+    buffer[total] = '\0';
+
+    return total;
+}
 
 int main(void)
 {
@@ -23,14 +52,13 @@ int main(void)
         return 1;
     }
 
-    /* Clear server address */
     memset(&server_addr, 0, sizeof(server_addr));
 
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(SERVER_PORT);
 
-    /* Convert IP address */
-    if (inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr) <= 0)
+    if (inet_pton(AF_INET, SERVER_IP,
+                  &server_addr.sin_addr) <= 0)
     {
         perror("inet_pton");
         close(sock);
@@ -49,24 +77,50 @@ int main(void)
 
     printf("Connected to RemoteOps Agent\n");
 
-    /* Receive Agent response */
-    memset(buffer, 0, sizeof(buffer));
+    /* Receive authentication request */
+    int bytes_received = receive_line(sock,
+                                      buffer,
+                                      sizeof(buffer));
 
-    int bytes_received = recv(sock,
-                              buffer,
-                              sizeof(buffer) - 1,
-                              0);
-
-    if (bytes_received < 0)
+    if (bytes_received <= 0)
     {
-        perror("recv");
+        printf("Failed to receive authentication request\n");
         close(sock);
         return 1;
     }
 
-    buffer[bytes_received] = '\0';
+    printf("Agent: %s", buffer);
 
-    printf("Agent response: %s", buffer);
+    /* Send authentication token */
+    char auth_message[100];
+
+    snprintf(auth_message,
+             sizeof(auth_message),
+             "AUTH %s\n",
+             AUTH_TOKEN);
+
+    send(sock,
+         auth_message,
+         strlen(auth_message),
+         0);
+
+    printf("Sent authentication token\n");
+
+    /* Receive authentication result */
+    memset(buffer, 0, sizeof(buffer));
+
+    bytes_received = receive_line(sock,
+                                  buffer,
+                                  sizeof(buffer));
+
+    if (bytes_received <= 0)
+    {
+        printf("Failed to receive authentication result\n");
+        close(sock);
+        return 1;
+    }
+
+    printf("Agent: %s", buffer);
 
     close(sock);
 
