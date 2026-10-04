@@ -1,0 +1,24 @@
+# Compiled programs
+agent_234
+controller_234
+
+# Backup / temporary source files
+agent_234_backup.c
+agent_234_before_framing.c
+agent_234_before_logging.c
+agent_234_framing.c
+agent_234_logging.c
+controller_234_backup.c
+controller_234_before_framing.c
+controller_234_framing.c
+
+# Logs
+*.log
+
+# Test files
+test.txt
+downloaded_test.txt
+agentfiles/
+
+# Temporary ZIP
+current_remoteops_sources.zip
