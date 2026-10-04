@@ -11,13 +11,10 @@
 #include <errno.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
-#include <sys/select.h>
 #include <netinet/in.h>
 
 #define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 9410
-
-#define UDP_PORT 9500
 
 #define AUTH_TOKEN "OPS-2234"
 #define SID "4322"
@@ -27,6 +24,9 @@
 
 #define BUFFER_SIZE 4096
 #define LINE_SIZE 1024
+
+/* UDP port can be changed for each Controller */
+int udp_port = 9500;
 
 
 /* ============================================================
@@ -117,6 +117,7 @@ int receive_line(int sockfd, char *buffer, size_t size)
     }
 
     buffer[size - 1] = '\0';
+
     return 0;
 }
 
@@ -131,7 +132,9 @@ int connect_to_agent(void)
 
     struct sockaddr_in server_addr;
 
-    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    sockfd = socket(AF_INET,
+                    SOCK_STREAM,
+                    0);
 
     if (sockfd < 0)
     {
@@ -144,10 +147,14 @@ int connect_to_agent(void)
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(SERVER_PORT);
 
-    if (inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr) <= 0)
+    if (inet_pton(AF_INET,
+                  SERVER_IP,
+                  &server_addr.sin_addr) <= 0)
     {
         perror("inet_pton");
+
         close(sockfd);
+
         return -1;
     }
 
@@ -156,7 +163,9 @@ int connect_to_agent(void)
                 sizeof(server_addr)) < 0)
     {
         perror("connect");
+
         close(sockfd);
+
         return -1;
     }
 
@@ -172,34 +181,43 @@ int authenticate(int sockfd)
 {
     char response[LINE_SIZE];
 
+    char request[LINE_SIZE];
+
     printf("\n--- AUTHENTICATION ---\n");
 
-    printf("Sending authentication token: %s\n", AUTH_TOKEN);
-
-    char request[LINE_SIZE];
+    printf("Sending authentication token: %s\n",
+           AUTH_TOKEN);
 
     snprintf(request,
              sizeof(request),
              "AUTH %s\n",
              AUTH_TOKEN);
 
-    if (send_all(sockfd, request, strlen(request)) < 0)
+    if (send_all(sockfd,
+                 request,
+                 strlen(request)) < 0)
     {
         perror("send");
+
         return -1;
     }
 
-    if (receive_line(sockfd, response, sizeof(response)) < 0)
+    if (receive_line(sockfd,
+                     response,
+                     sizeof(response)) < 0)
     {
         printf("Failed to receive authentication response.\n");
+
         return -1;
     }
 
     printf("Agent: %s\n", response);
 
-    if (strstr(response, "OK AUTHENTICATED") != NULL)
+    if (strstr(response,
+               "OK AUTHENTICATED") != NULL)
     {
         printf("Authentication successful.\n");
+
         return 0;
     }
 
@@ -213,9 +231,11 @@ int authenticate(int sockfd)
    Simple TCP command
    ============================================================ */
 
-int send_command(int sockfd, const char *command)
+int send_command(int sockfd,
+                 const char *command)
 {
     char request[LINE_SIZE];
+
     char response[BUFFER_SIZE];
 
     snprintf(request,
@@ -223,21 +243,29 @@ int send_command(int sockfd, const char *command)
              "%s\n",
              command);
 
-    printf("\nSent: %s\n", command);
+    printf("\nSent: %s\n",
+           command);
 
-    if (send_all(sockfd, request, strlen(request)) < 0)
+    if (send_all(sockfd,
+                 request,
+                 strlen(request)) < 0)
     {
         perror("send");
+
         return -1;
     }
 
-    if (receive_line(sockfd, response, sizeof(response)) < 0)
+    if (receive_line(sockfd,
+                     response,
+                     sizeof(response)) < 0)
     {
         printf("Failed to receive response.\n");
+
         return -1;
     }
 
-    printf("Agent: %s\n", response);
+    printf("Agent: %s\n",
+           response);
 
     return 0;
 }
@@ -264,6 +292,7 @@ int put_file(int sockfd)
     if (file == NULL)
     {
         perror("fopen test.txt");
+
         return -1;
     }
 
@@ -276,6 +305,7 @@ int put_file(int sockfd)
     if (filesize < 0)
     {
         fclose(file);
+
         return -1;
     }
 
@@ -284,15 +314,21 @@ int put_file(int sockfd)
     if (data == NULL)
     {
         printf("Memory allocation failed.\n");
+
         fclose(file);
+
         return -1;
     }
 
-    if (fread(data, 1, filesize, file) != (size_t)filesize)
+    if (fread(data,
+              1,
+              filesize,
+              file) != (size_t)filesize)
     {
         printf("Failed to read test file.\n");
 
         free(data);
+
         fclose(file);
 
         return -1;
@@ -310,29 +346,40 @@ int put_file(int sockfd)
            TEST_FILE,
            filesize);
 
-    if (send_all(sockfd, request, strlen(request)) < 0)
+    if (send_all(sockfd,
+                 request,
+                 strlen(request)) < 0)
     {
         free(data);
+
         return -1;
     }
 
-    if (send_all(sockfd, data, filesize) < 0)
+    if (send_all(sockfd,
+                 data,
+                 filesize) < 0)
     {
         free(data);
+
         return -1;
     }
 
-    printf("Sent %ld raw file bytes\n", filesize);
+    printf("Sent %ld raw file bytes\n",
+           filesize);
 
     free(data);
 
-    if (receive_line(sockfd, response, sizeof(response)) < 0)
+    if (receive_line(sockfd,
+                     response,
+                     sizeof(response)) < 0)
     {
         printf("Failed to receive PUT response.\n");
+
         return -1;
     }
 
-    printf("Agent: %s\n", response);
+    printf("Agent: %s\n",
+           response);
 
     return 0;
 }
@@ -359,20 +406,27 @@ int get_file(int sockfd)
              "GET %s\n",
              TEST_FILE);
 
-    printf("\nSent: GET %s\n", TEST_FILE);
+    printf("\nSent: GET %s\n",
+           TEST_FILE);
 
-    if (send_all(sockfd, request, strlen(request)) < 0)
+    if (send_all(sockfd,
+                 request,
+                 strlen(request)) < 0)
     {
         return -1;
     }
 
-    if (receive_line(sockfd, response, sizeof(response)) < 0)
+    if (receive_line(sockfd,
+                     response,
+                     sizeof(response)) < 0)
     {
         printf("Failed to receive GET response.\n");
+
         return -1;
     }
 
-    printf("Agent: %s\n", response);
+    printf("Agent: %s\n",
+           response);
 
     if (sscanf(response,
                "OK FILE_SEND %255s %ld",
@@ -380,6 +434,7 @@ int get_file(int sockfd)
                &filesize) != 2)
     {
         printf("Invalid GET response.\n");
+
         return -1;
     }
 
@@ -388,10 +443,13 @@ int get_file(int sockfd)
     if (data == NULL)
     {
         printf("Memory allocation failed.\n");
+
         return -1;
     }
 
-    if (receive_all(sockfd, data, filesize) < 0)
+    if (receive_all(sockfd,
+                    data,
+                    filesize) < 0)
     {
         printf("Failed to receive file data.\n");
 
@@ -400,7 +458,8 @@ int get_file(int sockfd)
         return -1;
     }
 
-    printf("Received %ld raw file bytes\n", filesize);
+    printf("Received %ld raw file bytes\n",
+           filesize);
 
     FILE *file = fopen(DOWNLOAD_FILE, "wb");
 
@@ -413,7 +472,10 @@ int get_file(int sockfd)
         return -1;
     }
 
-    fwrite(data, 1, filesize, file);
+    fwrite(data,
+           1,
+           filesize,
+           file);
 
     fclose(file);
 
@@ -427,7 +489,7 @@ int get_file(int sockfd)
 
 
 /* ============================================================
-   UDP monitoring
+   UDP Monitoring
    ============================================================ */
 
 int start_udp_monitor(int tcp_sockfd)
@@ -453,6 +515,7 @@ int start_udp_monitor(int tcp_sockfd)
     if (udp_sockfd < 0)
     {
         perror("UDP socket");
+
         return -1;
     }
 
@@ -462,7 +525,7 @@ int start_udp_monitor(int tcp_sockfd)
 
     udp_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
-    udp_addr.sin_port = htons(UDP_PORT);
+    udp_addr.sin_port = htons(udp_port);
 
     if (bind(udp_sockfd,
              (struct sockaddr *)&udp_addr,
@@ -478,15 +541,15 @@ int start_udp_monitor(int tcp_sockfd)
     printf("\n--- UDP MONITORING ---\n");
 
     printf("UDP listening port: %d\n",
-           UDP_PORT);
+           udp_port);
 
     snprintf(request,
              sizeof(request),
              "MONITOR START %d\n",
-             UDP_PORT);
+             udp_port);
 
     printf("Sent: MONITOR START %d\n",
-           UDP_PORT);
+           udp_port);
 
     if (send_all(tcp_sockfd,
                  request,
@@ -508,7 +571,8 @@ int start_udp_monitor(int tcp_sockfd)
         return -1;
     }
 
-    printf("Agent: %s\n", response);
+    printf("Agent: %s\n",
+           response);
 
     if (strstr(response,
                "OK MONITOR_STARTED") == NULL)
@@ -523,8 +587,8 @@ int start_udp_monitor(int tcp_sockfd)
     printf("\nWaiting for UDP monitoring packets...\n");
 
     /*
-     * Receive approximately 3 monitoring packets.
-     * The Agent sends one every 2 seconds.
+     * Receive approximately three monitoring packets.
+     * The Agent sends one packet every two seconds.
      */
 
     for (int i = 0; i < 3; i++)
@@ -543,6 +607,7 @@ int start_udp_monitor(int tcp_sockfd)
         if (received < 0)
         {
             perror("recvfrom");
+
             break;
         }
 
@@ -578,7 +643,8 @@ int start_udp_monitor(int tcp_sockfd)
         return -1;
     }
 
-    printf("Agent: %s\n", response);
+    printf("Agent: %s\n",
+           response);
 
     if (strstr(response,
                "OK MONITOR_STOPPED") != NULL)
@@ -596,25 +662,50 @@ int start_udp_monitor(int tcp_sockfd)
    Main
    ============================================================ */
 
-int main(void)
+int main(int argc, char *argv[])
 {
     int sockfd;
+
+    /*
+     * Optional UDP port argument.
+     *
+     * Example:
+     * ./controller_234 9501
+     */
+
+    if (argc > 1)
+    {
+        udp_port = atoi(argv[1]);
+
+        if (udp_port < 1024 ||
+            udp_port > 65535)
+        {
+            printf("Invalid UDP port.\n");
+
+            return 1;
+        }
+    }
 
     printf("========================================\n");
     printf("        RemoteOps Controller\n");
     printf("========================================\n");
 
-    printf("SID: %s\n", SID);
+    printf("SID: %s\n",
+           SID);
 
     printf("Connecting to Agent %s:%d\n",
            SERVER_IP,
            SERVER_PORT);
+
+    printf("Controller UDP port: %d\n",
+           udp_port);
 
     sockfd = connect_to_agent();
 
     if (sockfd < 0)
     {
         printf("Could not connect to Agent.\n");
+
         return 1;
     }
 
@@ -627,6 +718,7 @@ int main(void)
     if (authenticate(sockfd) < 0)
     {
         close(sockfd);
+
         return 1;
     }
 
@@ -634,33 +726,41 @@ int main(void)
      * SYSINFO
      */
 
-    send_command(sockfd, "SYSINFO");
+    send_command(sockfd,
+                 "SYSINFO");
 
     /*
      * LISTPROC
      */
 
-    send_command(sockfd, "LISTPROC");
+    send_command(sockfd,
+                 "LISTPROC");
 
     /*
      * EXEC commands
      */
 
-    send_command(sockfd, "EXEC DATE");
+    send_command(sockfd,
+                 "EXEC DATE");
 
-    send_command(sockfd, "EXEC UPTIME");
+    send_command(sockfd,
+                 "EXEC UPTIME");
 
-    send_command(sockfd, "EXEC DISKFREE");
+    send_command(sockfd,
+                 "EXEC DISKFREE");
 
-    send_command(sockfd, "EXEC HOSTNAME");
+    send_command(sockfd,
+                 "EXEC HOSTNAME");
 
-    send_command(sockfd, "EXEC WHOAMI");
+    send_command(sockfd,
+                 "EXEC WHOAMI");
 
     /*
      * Test invalid EXEC command.
      */
 
-    send_command(sockfd, "EXEC LS");
+    send_command(sockfd,
+                 "EXEC LS");
 
     /*
      * PUT
@@ -696,7 +796,8 @@ int main(void)
                          response,
                          sizeof(response)) == 0)
         {
-            printf("Agent: %s\n", response);
+            printf("Agent: %s\n",
+                   response);
         }
     }
 
