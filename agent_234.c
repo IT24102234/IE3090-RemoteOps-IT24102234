@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <time.h>
+#include <stdarg.h>
 
 #define PORT 9410
 #define SID "4322"
@@ -18,6 +19,46 @@
 #define MAX_FILE_SIZE (10ULL * 1024ULL * 1024ULL)
 
 #define MONITOR_INTERVAL 2
+
+#define LOG_FILE "remoteops_IT24102234.log"
+
+static FILE *log_fp = NULL;
+static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void log_event(const char *format, ...)
+{
+    if (log_fp == NULL)
+    {
+        return;
+    }
+
+    time_t now = time(NULL);
+    struct tm local_time;
+
+    localtime_r(&now, &local_time);
+
+    char timestamp[32];
+
+    strftime(timestamp,
+             sizeof(timestamp),
+             "%Y-%m-%d %H:%M:%S",
+             &local_time);
+
+    pthread_mutex_lock(&log_mutex);
+
+    fprintf(log_fp, "[%s] ", timestamp);
+
+    va_list args;
+    va_start(args, format);
+    vfprintf(log_fp, format, args);
+    va_end(args);
+
+    fprintf(log_fp, "\n");
+    fflush(log_fp);
+
+    pthread_mutex_unlock(&log_mutex);
+}
+
 
 /*
  * Information belonging to one connected Controller.
@@ -587,6 +628,10 @@ int handle_put(BufferedSocket *stream,
         {
             fclose(file);
 
+            log_event("FILE_TRANSFER PUT_INTERRUPTED file=%s size=%llu",
+                      filename,
+                      filesize);
+
             printf("PUT interrupted: %s\n",
                    filename);
 
@@ -628,6 +673,10 @@ int handle_put(BufferedSocket *stream,
     send_all(stream->fd,
              response,
              strlen(response));
+
+    log_event("FILE_TRANSFER PUT_COMPLETED file=%s size=%llu",
+              filename,
+              filesize);
 
     printf("PUT completed: %s (%llu bytes)\n",
            filename,
@@ -694,6 +743,9 @@ int handle_get(int client_fd,
         send_all(client_fd,
                  response,
                  strlen(response));
+
+        log_event("FILE_TRANSFER GET_NOT_FOUND file=%s",
+                  filename);
 
         printf("GET file not found: %s\n",
                filename);
@@ -771,6 +823,10 @@ int handle_get(int client_fd,
     }
 
     fclose(file);
+
+    log_event("FILE_TRANSFER GET_COMPLETED file=%s size=%ld",
+              filename,
+              file_size);
 
     printf("GET completed: %s (%ld bytes)\n",
            filename,
@@ -923,6 +979,11 @@ int start_monitoring(ClientSession *session,
         return -1;
     }
 
+    log_event("MONITOR_START udp_port=%d for %s:%d",
+              udp_port,
+              inet_ntoa(session->client_addr.sin_addr),
+              ntohs(session->client_addr.sin_port));
+
     printf("UDP monitoring started on port %d\n",
            udp_port);
 
@@ -963,6 +1024,10 @@ void stop_monitoring(ClientSession *session)
         pthread_mutex_unlock(
             &session->monitor_mutex);
 
+        log_event("MONITOR_STOP for %s:%d",
+                  inet_ntoa(session->client_addr.sin_addr),
+                  ntohs(session->client_addr.sin_port));
+
         printf("UDP monitoring stopped\n");
     }
 }
@@ -992,6 +1057,10 @@ void *controller_worker(void *arg)
            inet_ntoa(session->client_addr.sin_addr),
            ntohs(session->client_addr.sin_port));
 
+    log_event("CONNECTION from %s:%d",
+              inet_ntoa(session->client_addr.sin_addr),
+              ntohs(session->client_addr.sin_port));
+
     char buffer[4096];
 
     /*
@@ -1005,6 +1074,10 @@ void *controller_worker(void *arg)
     if (bytes_received <= 0)
     {
         printf("Controller disconnected before authentication\n");
+
+        log_event("DISCONNECT_UNAUTHENTICATED from %s:%d",
+                  inet_ntoa(session->client_addr.sin_addr),
+                  ntohs(session->client_addr.sin_port));
 
         close(client_fd);
 
@@ -1033,6 +1106,10 @@ void *controller_worker(void *arg)
                  response,
                  strlen(response));
 
+        log_event("AUTH_FAILED from %s:%d",
+                  inet_ntoa(session->client_addr.sin_addr),
+                  ntohs(session->client_addr.sin_port));
+
         printf("Controller authentication failed\n");
 
         close(client_fd);
@@ -1055,6 +1132,10 @@ void *controller_worker(void *arg)
     session->authenticated =
         1;
 
+    log_event("AUTH_SUCCESS from %s:%d",
+              inet_ntoa(session->client_addr.sin_addr),
+              ntohs(session->client_addr.sin_port));
+
     printf("Controller authenticated successfully\n");
 
 
@@ -1070,10 +1151,24 @@ void *controller_worker(void *arg)
 
         if (bytes_received <= 0)
         {
+            log_event("DISCONNECT_UNGRACEFUL from %s:%d",
+                      inet_ntoa(session->client_addr.sin_addr),
+                      ntohs(session->client_addr.sin_port));
+
             printf("Controller disconnected unexpectedly\n");
 
             break;
         }
+
+        char log_command[4096];
+        strncpy(log_command, buffer, sizeof(log_command) - 1);
+        log_command[sizeof(log_command) - 1] = '\0';
+        log_command[strcspn(log_command, "\r\n")] = '\0';
+
+        log_event("COMMAND from %s:%d: %s",
+                  inet_ntoa(session->client_addr.sin_addr),
+                  ntohs(session->client_addr.sin_port),
+                  log_command);
 
 
         /*
@@ -1274,6 +1369,10 @@ void *controller_worker(void *arg)
                      response,
                      strlen(response));
 
+            log_event("DISCONNECT_GRACEFUL QUIT from %s:%d",
+                      inet_ntoa(session->client_addr.sin_addr),
+                      ntohs(session->client_addr.sin_port));
+
             printf("Controller requested disconnect\n");
 
             break;
@@ -1302,6 +1401,10 @@ void *controller_worker(void *arg)
     stop_monitoring(session);
 
     close(client_fd);
+
+    log_event("CONNECTION_CLOSED %s:%d",
+              inet_ntoa(session->client_addr.sin_addr),
+              ntohs(session->client_addr.sin_port));
 
     printf("Controller connection closed\n");
 
@@ -1334,6 +1437,18 @@ int main(void)
     {
         perror("mkdir storage");
     }
+
+    log_fp = fopen(LOG_FILE, "a");
+    if (log_fp == NULL)
+    {
+        perror("fopen log");
+        return 1;
+    }
+
+    log_event("AGENT_STARTED SID:%s TCP_PORT:%d STORAGE:%s",
+              SID,
+              PORT,
+              STORAGE_DIR);
 
 
     /*
